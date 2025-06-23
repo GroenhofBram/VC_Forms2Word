@@ -4,13 +4,11 @@ library(tidyverse)
 library(officer)
 
 # --- FUNCTIONS ---
-
 # Reformat data
-reformat_data <- function(unformatted_df){
+reformat_data <- function(unformatted_df) {
   formatted_df <- unformatted_df %>%
     rename("VC lid" = "Geef uw naam") %>%
     mutate(across(where(is.character), ~replace_na(., "geen opmerkingen")))
-  
   return(formatted_df)
 }
 
@@ -31,13 +29,13 @@ extract_column_name <- function(col_name) {
 }
 
 # --- SHINY APP ---
-
 ui <- fluidPage(
   titlePanel("Feedback Word Exporter"),
   sidebarLayout(
     sidebarPanel(
       fileInput("file", "Upload Excel File", accept = ".xlsx"),
-      actionButton("process", "Generate Word Documents")
+      actionButton("process", "Generate Word Documents"),
+      uiOutput("download_ui")  # Placeholder for download buttons
     ),
     mainPanel(
       verbatimTextOutput("status")
@@ -46,9 +44,10 @@ ui <- fluidPage(
 )
 
 server <- function(input, output) {
+  docs_created <- reactiveVal(list())  # Store the names of generated documents
+  
   observeEvent(input$process, {
     req(input$file)
-    
     tryCatch({
       # Read and process data
       data_df <- read_excel(input$file$datapath)
@@ -59,14 +58,14 @@ server <- function(input, output) {
       prefixes <- unique(sub("(CG[0-9]+).*", "\\1", cg_columns))
       current_date <- format(Sys.Date(), "%Y-%m-%d")
       
+      generated_files <- character()  # Store generated filenames
+      
       # Process each prefix
       for (prefix in prefixes) {
         doc <- read_docx()
         current_cg_columns <- cg_columns[grepl(paste0("^", prefix), cg_columns)]
-        
         for (cg_col in current_cg_columns) {
           current_df <- data_df %>% select(`VC lid`, !!sym(cg_col))
-          
           if (nrow(current_df) > 0) {
             simplified_col_name <- extract_column_name(cg_col)
             colnames(current_df)[2] <- simplified_col_name
@@ -78,20 +77,48 @@ server <- function(input, output) {
               body_add_break()
           }
         }
-        
         sanitized_prefix <- sanitize_filename(prefix)
         filename <- paste0(current_date, "_FB_Gebundeld_", sanitized_prefix, ".docx")
-        print(doc, target = filename)
+        
+        # Save document to a temporary file
+        temp_file <- tempfile(fileext = ".docx")
+        print(doc, target = temp_file)
+        generated_files <- c(generated_files, temp_file)
       }
       
+      docs_created(generated_files)  # Update the reactive value
       output$status <- renderText({
-        "✅ Word documents generated and saved to the working directory."
+        "✅ Word documents generated."
       })
       
     }, error = function(e) {
       output$status <- renderText({
         paste("❌ Error:", e$message)
       })
+    })
+  })
+  
+  # Create download buttons 
+  output$download_ui <- renderUI({
+    req(docs_created())
+    downloadButtons <- lapply(docs_created(), function(fname) {
+      name <- basename(fname)
+      downloadButton(outputId = paste0("download_", name), label = name)
+    })
+    do.call(tagList, downloadButtons)
+  })
+  
+  # Create download handlers
+  observe({
+    req(docs_created())
+    lapply(docs_created(), function(fname) {
+      name <- basename(fname)
+      output[[paste0("download_", name)]] <- downloadHandler(
+        filename = function() { name },
+        content = function(file) {
+          file.copy(fname, file)  # Copy the temporary file to the download location
+        }
+      )
     })
   })
 }
